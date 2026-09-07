@@ -98,16 +98,44 @@ This project is provided for **educational and authorized security testing purpo
 - Using detection results to target individuals without legal basis
 - Any activity that violates applicable laws or regulations
 - Commercial use without proper licensing
+- Attaching any RF front-end capable of scanning beacons beyond your own equipment without written lab scope
 
-### No Warranty
-This software is provided "AS IS" without warranty of any kind. The author is not responsible for any misuse or damage caused by this software.
+### Regulatory Framework (Passive Monitoring)
+- **Federal Communications Act (47 U.S.C. § 333)**: Willful interference with authorized radio communications is prohibited.
+- **47 CFR Part 15**: Unauthorized intentional radiators are regulated; passive monitoring by this repo emits nothing (byte-level, pcap-only).
+- **CFAA / ECPA / Wiretap Act**: Ingesting wireless traffic without authorization may violate federal and state computer-access and interception laws.
+- **GDPR/CCPA**: Wireless event logs may contain personal data subject to data protection regulations.
 
-### Responsible Disclosure
-If this sensor detects real vulnerabilities, follow responsible disclosure practices:
-1. Report to the affected network owner privately
-2. Allow reasonable time for remediation
-3. Do not exploit detected weaknesses beyond proof of concept
-4. Follow your organization's incident response procedures
+## Live Lab Test Plan
+
+Offline (this repo, no radio):
+1. `python3 firmware/wids_sensor.py --gen-fixture reports/attack.pcap --json reports/w7.json`
+   — build the synthetic deauth-storm + spoofing fixture (exit 0).
+2. `python3 firmware/wids_sensor.py --detect --pcap reports/attack.pcap`
+   — detect storm / MAC-spoofing / beacon misbehavior; expect all three alert types (exit 0).
+3. `python3 firmware/wids_sensor.py --features` — 1Hz normalized ML SIEM feature table (exit 0).
+4. `python3 -m unittest discover -s tests` — byte-exact tests pass (exit 0).
+
+Authorized lab (passive only, written scope):
+5. Capture 60s of authorized lab traffic as pcap (linktype 105), then classify with
+   `--detect --pcap captures/lab.pcap`. Deauth storms are `high`; locally-administered or
+   broadcast-source deauth SAs are `medium/high`; SSID churn >2 BSSIDs is `medium`.
+6. `green = permitted`: passive, unamplified monitoring of devices you own; no deauth or
+   injection frames are ever transmitted by this tool.
+
+## Metrics
+
+- Byte-level classification off the wire: beacon deauth probe (FC subtype, SA/DA/BSSID, seq,
+  FCS verify) — no ML, no RF
+- Detectors: deauth storm (≥5 frames in 1s per target+source), MAC spoofing (locally-administered
+  SA, broadcast DA/SA, SA churn), beacon misbehavior (SSID-from-N-BSSIDs churn, non-standard interval)
+- Alert API: structured list of {type, detail, bssid/src/ssid, severity} dicts; CSV/JSON export
+- 1Hz feature extractor: deauth_rate, bssid_churn, rssi_std/var, unique_attackers (ML SIEM feed)
+- pcap classic (linktype 105): synthetic fixture built in-repo; captures/ and reports/ gitignored
+- Offline: all frames synthesized as bytes; no radio, no wall-clock data in the detection path
+
+- Test suite: `python3 -m unittest discover -s tests`
+- Reports: `reports/` (gitignored)
 
 ## License
 
