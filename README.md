@@ -3,145 +3,99 @@
 > or hold explicit written authorization to assess**. Unauthorized use is
 > prohibited and may be illegal. Read [ETHICS.md](ETHICS.md) and
 > [SCOPE.md](SCOPE.md) before use. Use at your own risk; **AS IS**, no warranty.
+
 # W7 — Wireless IDS Sensor
 
-Feature extractor that turns wireless-catalog events into 1 Hz feature lines for an ML SIEM.
+**WIDS sensor** by **5h4d0wn1k** for **Wi-Fi intrusion detection on networks
+you own**: byte-level classification of deauth storms, MAC spoofing and beacon
+misbehavior off the wire — plus a 1 Hz normalized feature extractor feeding an
+ML SIEM. Pure Python standard library, fully offline on synthetic pcap.
 
-## Overview
+## Why a wireless IDS sensor
 
-This project implements a wireless IDS feature extractor for ML-based SIEM integration:
-- Parses an embedded event log with deauth rates, BSSID churn, RSSI variance, and probe flux
-- Extracts normalized 1 Hz feature lines from wireless catalog events
-- Labels attack vs benign windows using embedded ground truth
-- Exports labeled training-window CSV for the x6 SIEM schema
-- Produces a normalized feature table ready for ML consumption
+Deauthentication storms, spoofed-source deauths and beacon misbehavior are
+the cheapest wireless attacks — and the easiest to miss with coarse counters.
+This sensor classifies bytes, not flows: it parses 802.11 management frames
+(FC subtype, SA/DA/BSSID, sequence, FCS), then runs three detectors —
+deauth storms (≥5 frames per target+source in a 1s window), MAC spoofing
+(locally-administered SAs, broadcast-source deauths, SA churn) and beacon
+misbehavior (SSID churn across BSSIDs, non-standard intervals) — emitting
+structured alerts with severity. The same data feeds a 1 Hz feature table
+(deauth rate, BSSID churn, RSSI variance, unique attackers) normalized for an
+ML SIEM. It transmits nothing; capture and classify only within written
+scope. See [ETHICS.md](ETHICS.md) and [SCOPE.md](SCOPE.md).
 
 ## Features
 
-- **1 Hz Feature Extraction**: Computes per-second feature vectors from event streams
-- **Multi-Dimensional Features**: Deauth rate, BSSID churn, RSSI variance, probe flux, beacon count
-- **Attack Labeling**: Automatic window labeling with ATT&CK technique IDs from embedded ground truth
-- **Min-Max Normalization**: Feature values normalized to [0, 1] for ML pipeline consumption
-- **CSV Export**: Labeled training data export compatible with the x6 SIEM schema
-- **Offline Demo**: Fully self-contained with embedded sample event data
+- **Byte-level 802.11 parsing** — deauth/beacon/probe frame decode off the
+  wire with FCS handling (`firmware/frame_core.py`).
+- **Deauth storm detection** — ≥5 deauth frames per target+source within a
+  1s window (`detect_deauth_storm`).
+- **MAC spoofing detection** — locally-administered SA, broadcast DA/SA
+  sources and SA churn (`detect_mac_spoofing`).
+- **Beacon misbehavior detection** — SSID broadcast by many BSSIDs and
+  non-standard beacon intervals.
+- **Alert API** — structured `{type, detail, bssid/src/ssid, severity}` alert
+  dicts with JSON and CSV export (`--alert-csv`).
+- **ML SIEM feature extractor** — 1 Hz normalized rows: `deauth_rate`,
+  `bssid_churn`, `rssi_mean/var/std`, `unique_attackers` (`--features`).
+- **Synthetic pcap fixture** — deterministic deauth-storm + spoofing capture
+  generated offline (`--gen-fixture`), no radio required.
 
-## Installation
+## Quickstart
 
 ```bash
-# No external dependencies required — pure Python stdlib
-python3 wids_sensor.py
+# Build the synthetic deauth-storm + spoofing fixture and run detection
+python3 firmware/wids_sensor.py --gen-fixture reports/attack.pcap --json reports/w7.json
+python3 firmware/wids_sensor.py --detect --pcap reports/attack.pcap
+
+# Emit the 1 Hz normalized ML SIEM feature table
+python3 firmware/wids_sensor.py --features
+
+# Run the test suite (12 byte-exact offline tests)
+python3 -m unittest discover -s tests
 ```
 
-## Usage
-
-```bash
-# Run full pipeline demo (offline, embedded data)
-python3 wids_sensor.py
-
-# Programmatic usage
-from wids_sensor import WIDSSensor
-
-sensor = WIDSSensor()
-sensor.run_pipeline()
-
-# Access feature table
-for row in sensor.feature_table:
-    print(row["label"], row["deauth_rate"], row["bssid_churn"])
-```
-
-## Example Output
+## CLI
 
 ```
-============================================================
-  W7 — Wireless IDS Sensor
-============================================================
-[+] Parsed 50 wireless catalog events
-    deauth: 25
-    beacon: 15
-    probe: 10
-[+] Extracted 5 feature windows @ 1.0s each
-[+] Labeled: 5 attack windows, 0 benign windows
-[+] Normalized 5 feature rows
-
-=== Normalized Feature Table (ML SIEM schema) ===
- Win Label    Tech           DeAuth   Churn   RSSI   Probe  Beacons   Total
-----------------------------------------------------------------------------
-   0 attack   T1561.002        1.000   1.000  0.000  1.000        4      14 <<<
-   1 attack   T1561.002        1.000   1.000  0.500  0.500        5      14 <<<
-   2 attack   T1561.002        0.800   1.000  0.750  0.500        5      13 <<<
-   3 attack   T1561.002        0.800   1.000  1.000  0.500        5      13 <<<
-   4 attack   T1561.002        1.000   1.000  0.250  0.500        4      10 <<<
-
-[+] CSV export: 456 bytes, 6 rows
-[+] Pipeline complete — exit 0
+python3 firmware/wids_sensor.py [-h] [--detect] [--features] [--pcap PATH]
+                                [--gen-fixture PATH] [--json PATH]
+                                [--alert-csv PATH]
 ```
 
-## IMPORTANT: Read before use.
+- `--detect` — run the byte-level detection pipeline (default). Expect all
+  three alert types on the synthetic fixture.
+- `--features` — emit the 1 Hz normalized ML feature table.
+- `--pcap` — pcap (linktype 105) to read; default is the synthetic fixture.
+- `--gen-fixture PATH` — write the synthetic attack fixture and exit.
+- `--json PATH` — write a JSON report.
+- `--alert-csv PATH` — write alerts to CSV.
 
-This project is provided for **educational and authorized security testing purposes only**.
+## Project structure
 
-### Authorization Requirements
-- You MUST have explicit written permission before deploying this sensor on monitored networks
-- Ingesting wireless events without authorization may violate privacy and computer access laws
-- This tool should ONLY be used on networks you own or have written authorization to monitor
-- Event data must be handled in accordance with organizational data retention policies
+```
+firmware/wids_sensor.py   # detectors, feature extractor, CLI
+firmware/frame_core.py    # 802.11 frame build/parse helpers
+tests/                    # byte-exact unittest coverage
+pcap/  captures/  reports/  # gitignored — never commit traffic or reports
+```
 
-### Legal Framework
-- **Computer Fraud and Abuse Act (CFAA)**: Unauthorized access to computer systems is a federal crime
-- **ECPA/Wiretap Act**: Intercepting or accessing wireless communications may require authorization
-- **GDPR/CCPA**: Wireless event logs may contain personal data subject to data protection regulations
-- **State Laws**: Many states have additional computer crime and privacy statutes
+## Documentation
 
-### Acceptable Use
-- Monitoring your own wireless infrastructure for security threats
-- Authorized security operations center (SOC) deployments with proper authorization
-- Academic research in controlled lab environments
-- Security education and training demonstrations
+- [ETHICS.md](ETHICS.md) — acceptable and prohibited use.
+- [SCOPE.md](SCOPE.md) — authorized target scope and passive-monitoring rules.
+- [SECURITY.md](SECURITY.md) — responsible disclosure.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution guide.
 
-### Prohibited Use
-- Deploying this sensor on wireless networks without proper authorization and notice
-- Using detection results to target individuals without legal basis
-- Any activity that violates applicable laws or regulations
-- Commercial use without proper licensing
-- Attaching any RF front-end capable of scanning beacons beyond your own equipment without written lab scope
+## Contributing
 
-### Regulatory Framework (Passive Monitoring)
-- **Federal Communications Act (47 U.S.C. § 333)**: Willful interference with authorized radio communications is prohibited.
-- **47 CFR Part 15**: Unauthorized intentional radiators are regulated; passive monitoring by this repo emits nothing (byte-level, pcap-only).
-- **CFAA / ECPA / Wiretap Act**: Ingesting wireless traffic without authorization may violate federal and state computer-access and interception laws.
-- **GDPR/CCPA**: Wireless event logs may contain personal data subject to data protection regulations.
-
-## Live Lab Test Plan
-
-Offline (this repo, no radio):
-1. `python3 firmware/wids_sensor.py --gen-fixture reports/attack.pcap --json reports/w7.json`
-   — build the synthetic deauth-storm + spoofing fixture (exit 0).
-2. `python3 firmware/wids_sensor.py --detect --pcap reports/attack.pcap`
-   — detect storm / MAC-spoofing / beacon misbehavior; expect all three alert types (exit 0).
-3. `python3 firmware/wids_sensor.py --features` — 1Hz normalized ML SIEM feature table (exit 0).
-4. `python3 -m unittest discover -s tests` — byte-exact tests pass (exit 0).
-
-Authorized lab (passive only, written scope):
-5. Capture 60s of authorized lab traffic as pcap (linktype 105), then classify with
-   `--detect --pcap captures/lab.pcap`. Deauth storms are `high`; locally-administered or
-   broadcast-source deauth SAs are `medium/high`; SSID churn >2 BSSIDs is `medium`.
-6. `green = permitted`: passive, unamplified monitoring of devices you own; no deauth or
-   injection frames are ever transmitted by this tool.
-
-## Metrics
-
-- Byte-level classification off the wire: beacon deauth probe (FC subtype, SA/DA/BSSID, seq,
-  FCS verify) — no ML, no RF
-- Detectors: deauth storm (≥5 frames in 1s per target+source), MAC spoofing (locally-administered
-  SA, broadcast DA/SA, SA churn), beacon misbehavior (SSID-from-N-BSSIDs churn, non-standard interval)
-- Alert API: structured list of {type, detail, bssid/src/ssid, severity} dicts; CSV/JSON export
-- 1Hz feature extractor: deauth_rate, bssid_churn, rssi_std/var, unique_attackers (ML SIEM feed)
-- pcap classic (linktype 105): synthetic fixture built in-repo; captures/ and reports/ gitignored
-- Offline: all frames synthesized as bytes; no radio, no wall-clock data in the detection path
-
-- Test suite: `python3 -m unittest discover -s tests`
-- Reports: `reports/` (gitignored)
+New detectors, feature definitions and frame parsers are welcome. Open an
+issue or PR against the default branch; keep contributions scoped to passive,
+authorized monitoring tooling.
 
 ## License
 
-MIT
+MIT — full legal shield in [LICENSE](LICENSE). Educational, authorization-
+required software for passively monitoring wireless networks you own or are
+explicitly permitted to secure.
